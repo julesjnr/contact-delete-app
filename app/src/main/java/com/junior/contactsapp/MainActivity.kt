@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -89,9 +90,63 @@ fun ContactsScreen(
     permissionsChecked: Boolean,
     onRequestPermission: () -> Unit
 ) {
+    val selectedCount = viewModel.selectedContactIds.size
+    val isSelectionMode = selectedCount > 0
+
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Contacts") })
+            TopAppBar(
+                title = {
+                    if (isSelectionMode) {
+                        Text("$selectedCount selected")
+                    } else {
+                        Text("Contacts")
+                    }
+                },
+                actions = {
+                    if (viewModel.contacts.isNotEmpty()) {
+                        if (isSelectionMode && selectedCount == viewModel.contacts.size) {
+                            TextButton(onClick = { viewModel.clearSelection() }) {
+                                Text("Deselect All")
+                            }
+                        } else {
+                            TextButton(onClick = { viewModel.selectAll() }) {
+                                Text("Select All")
+                            }
+                        }
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            if (isSelectionMode) {
+                Surface(
+                    tonalElevation = 3.dp,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { viewModel.clearSelection() }) {
+                            Text("Clear")
+                        }
+                        Button(
+                            onClick = { viewModel.requestDeleteSelected() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Text("Delete Selected ($selectedCount)")
+                        }
+                    }
+                }
+            }
         }
     ) { padding ->
         Box(
@@ -125,6 +180,12 @@ fun ContactsScreen(
                         }
                     }
                 }
+                viewModel.isLoading && viewModel.contacts.isEmpty() -> {
+                    // Initial load or loading while list is empty
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
                 viewModel.contacts.isEmpty() -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("No contacts found.")
@@ -133,8 +194,11 @@ fun ContactsScreen(
                 else -> {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(viewModel.contacts, key = { it.contactId }) { contact ->
+                            val isSelected = contact.contactId in viewModel.selectedContactIds
                             ContactRow(
                                 contact = contact,
+                                isSelected = isSelected,
+                                onToggleSelect = { viewModel.toggleSelectContact(contact.contactId) },
                                 onDeleteClick = { viewModel.requestDelete(contact) }
                             )
                             HorizontalDivider()
@@ -143,7 +207,16 @@ fun ContactsScreen(
                 }
             }
 
-            // Confirmation dialog before actually deleting anything.
+            // Top progress bar during background deletion / re-querying when contacts are already displayed
+            if (viewModel.isLoading && viewModel.contacts.isNotEmpty()) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                )
+            }
+
+            // Confirmation dialog before deleting a single contact
             viewModel.contactToDelete?.let { contact ->
                 AlertDialog(
                     onDismissRequest = { viewModel.cancelDelete() },
@@ -151,11 +224,34 @@ fun ContactsScreen(
                     text = { Text("Delete \"${contact.name}\" from your contacts? This cannot be undone.") },
                     confirmButton = {
                         TextButton(onClick = { viewModel.confirmDelete() }) {
-                            Text("Delete")
+                            Text("Delete", color = MaterialTheme.colorScheme.error)
                         }
                     },
                     dismissButton = {
                         TextButton(onClick = { viewModel.cancelDelete() }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
+            // Confirmation dialog before deleting multiple selected contacts
+            if (viewModel.showBatchDeleteDialog) {
+                AlertDialog(
+                    onDismissRequest = { viewModel.cancelDeleteSelected() },
+                    title = { Text("Delete selected contacts?") },
+                    text = {
+                        Text(
+                            "Delete $selectedCount selected contact${if (selectedCount > 1) "s" else ""} from your contacts? This cannot be undone."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.confirmDeleteSelected() }) {
+                            Text("Delete", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { viewModel.cancelDeleteSelected() }) {
                             Text("Cancel")
                         }
                     }
@@ -166,13 +262,24 @@ fun ContactsScreen(
 }
 
 @Composable
-fun ContactRow(contact: Contact, onDeleteClick: () -> Unit) {
+fun ContactRow(
+    contact: Contact,
+    isSelected: Boolean,
+    onToggleSelect: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onToggleSelect)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Checkbox(
+            checked = isSelected,
+            onCheckedChange = { onToggleSelect() }
+        )
+        Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(contact.name, style = MaterialTheme.typography.bodyLarge)
             if (contact.phoneNumber != null) {

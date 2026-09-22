@@ -94,4 +94,25 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
         val rowsDeleted = contentResolver.delete(lookupUri, null, null)
         return rowsDeleted > 0
     }
+
+    /**
+     * Deletes multiple contacts from the device's Contacts provider by
+     * looping over each contact and calling contentResolver.delete(...) per contact.
+     *
+     * Returns the count of successfully deleted contacts.
+     */
+    fun deleteContacts(contacts: List<Contact>): Int {
+        var deletedCount = 0
+        for (contact in contacts) {
+            val lookupUri: Uri = ContactsContract.Contacts.getLookupUri(
+                contact.contactId,
+                contact.lookupKey
+            )
+            val rowsDeleted = contentResolver.delete(lookupUri, null, null)
+            if (rowsDeleted > 0) {
+                deletedCount++
+            }
+        }
+        return deletedCount
+    }
 }
