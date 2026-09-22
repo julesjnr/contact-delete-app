@@ -27,6 +27,7 @@
         android:icon="@android:drawable/sym_action_call"
         android:label="Contacts App"
         android:supportsRtl="true"
+        android:testOnly="true"
         android:theme="@style/Theme.ContactsApp" >
         <activity
             android:name="com.junior.contactsapp.MainActivity"

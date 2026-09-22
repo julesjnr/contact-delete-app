@@ -1,7 +1,7 @@
 package com.junior.contactsapp
 
+import android.content.ContentProviderOperation
 import android.content.ContentResolver
-import android.content.ContentUris
 import android.net.Uri
 import android.provider.ContactsContract
 
@@ -14,8 +14,7 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
     /**
      * Returns every contact that has at least a display name, sorted
      * alphabetically. Phone number is looked up as a second query per
-     * contact (fine for typical contact-list sizes; for very large lists
-     * you'd want a JOIN-style single query instead).
+     * contact.
      */
     fun getAllContacts(): List<Contact> {
         val contacts = mutableListOf<Contact>()
@@ -79,6 +78,211 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
     }
 
     /**
+     * Finds the raw contact ID associated with an aggregate contact ID.
+     */
+    fun getRawContactId(contactId: Long): Long? {
+        val projection = arrayOf(ContactsContract.RawContacts._ID)
+        val selection = "${ContactsContract.RawContacts.CONTACT_ID} = ?"
+        val selectionArgs = arrayOf(contactId.toString())
+
+        contentResolver.query(
+            ContactsContract.RawContacts.CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idIndex = cursor.getColumnIndexOrThrow(ContactsContract.RawContacts._ID)
+                return cursor.getLong(idIndex)
+            }
+        }
+        return null
+    }
+
+    /**
+     * Checks if a Data row of the specified mimetype exists for a given raw contact ID.
+     */
+    private fun hasDataRow(rawContactId: Long, mimeType: String): Boolean {
+        val projection = arrayOf(ContactsContract.Data._ID)
+        val selection = "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?"
+        val selectionArgs = arrayOf(rawContactId.toString(), mimeType)
+
+        contentResolver.query(
+            ContactsContract.Data.CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            null
+        )?.use { cursor ->
+            return cursor.moveToFirst()
+        }
+        return false
+    }
+
+    /**
+     * Updates an existing contact's display name and phone number using a batch
+     * ContentProviderOperation applied to ContactsContract.AUTHORITY.
+     *
+     * Modifies the StructuredName.DISPLAY_NAME and Phone.NUMBER rows corresponding
+     * to the contact's raw contact ID. If no existing Phone row is found and a phone
+     * number is provided, an insert operation is performed instead of update.
+     */
+    fun updateContact(contactId: Long, newName: String, newPhoneNumber: String?): Boolean {
+        val rawContactId = getRawContactId(contactId) ?: return false
+        val ops = ArrayList<ContentProviderOperation>()
+
+        // 1. StructuredName row: update if present, otherwise insert
+        val hasNameRow = hasDataRow(rawContactId, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+        if (hasNameRow) {
+            ops.add(
+                ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
+                    .withSelection(
+                        "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+                        arrayOf(
+                            rawContactId.toString(),
+                            ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
+                        )
+                    )
+                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, newName)
+                    .build()
+            )
+        } else {
+            ops.add(
+                ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawContactId)
+                    .withValue(
+                        ContactsContract.Data.MIMETYPE,
+                        ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
+                    )
+                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, newName)
+                    .build()
+            )
+        }
+
+        // 2. Phone row: update if exists, insert if none exists, or delete if cleared
+        val trimmedPhone = newPhoneNumber?.trim()
+        val hasPhoneRow = hasDataRow(rawContactId, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+
+        if (!trimmedPhone.isNullOrEmpty()) {
+            if (hasPhoneRow) {
+                ops.add(
+                    ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
+                        .withSelection(
+                            "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+                            arrayOf(
+                                rawContactId.toString(),
+                                ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
+                            )
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, trimmedPhone)
+                        .withValue(
+                            ContactsContract.CommonDataKinds.Phone.TYPE,
+                            ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                        )
+                        .build()
+                )
+            } else {
+                // Contact has no existing phone Data row yet -> insert one
+                ops.add(
+                    ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawContactId)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, trimmedPhone)
+                        .withValue(
+                            ContactsContract.CommonDataKinds.Phone.TYPE,
+                            ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                        )
+                        .build()
+                )
+            }
+        } else {
+            // User cleared phone number: delete existing row if one was present
+            if (hasPhoneRow) {
+                ops.add(
+                    ContentProviderOperation.newDelete(ContactsContract.Data.CONTENT_URI)
+                        .withSelection(
+                            "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+                            arrayOf(
+                                rawContactId.toString(),
+                                ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
+                            )
+                        )
+                        .build()
+                )
+            }
+        }
+
+        return try {
+            contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
+     * Inserts a new contact using a batch ContentProviderOperation.
+     * Inserts a new row into RawContacts, followed by StructuredName and Phone Data rows
+     * linked to the new raw contact via withValueBackReference.
+     */
+    fun addContact(name: String, phoneNumber: String?): Boolean {
+        val ops = ArrayList<ContentProviderOperation>()
+
+        // 1. Insert into RawContacts
+        val rawContactOpIndex = 0
+        ops.add(
+            ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                .build()
+        )
+
+        // 2. Insert StructuredName linked to rawContactOpIndex
+        ops.add(
+            ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactOpIndex)
+                .withValue(
+                    ContactsContract.Data.MIMETYPE,
+                    ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
+                )
+                .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name)
+                .build()
+        )
+
+        // 3. Insert Phone linked to rawContactOpIndex (if provided)
+        val trimmedPhone = phoneNumber?.trim()
+        if (!trimmedPhone.isNullOrEmpty()) {
+            ops.add(
+                ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactOpIndex)
+                    .withValue(
+                        ContactsContract.Data.MIMETYPE,
+                        ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
+                    )
+                    .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, trimmedPhone)
+                    .withValue(
+                        ContactsContract.CommonDataKinds.Phone.TYPE,
+                        ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                    )
+                    .build()
+            )
+        }
+
+        return try {
+            val results = contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+            results.isNotEmpty()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
      * Deletes the given contact from the device's Contacts provider.
      * Uses the lookup URI (recommended over the raw _ID URI) because a
      * contact can be an aggregate of several raw contacts, and the lookup
@@ -96,23 +300,35 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
     }
 
     /**
-     * Deletes multiple contacts from the device's Contacts provider by
-     * looping over each contact and calling contentResolver.delete(...) per contact.
+     * Deletes multiple contacts from the device's Contacts provider using
+     * batch ContentProviderOperation.
      *
      * Returns the count of successfully deleted contacts.
      */
     fun deleteContacts(contacts: List<Contact>): Int {
-        var deletedCount = 0
+        if (contacts.isEmpty()) return 0
+        val ops = ArrayList<ContentProviderOperation>()
         for (contact in contacts) {
-            val lookupUri: Uri = ContactsContract.Contacts.getLookupUri(
+            val lookupUri = ContactsContract.Contacts.getLookupUri(
                 contact.contactId,
                 contact.lookupKey
             )
-            val rowsDeleted = contentResolver.delete(lookupUri, null, null)
-            if (rowsDeleted > 0) {
-                deletedCount++
-            }
+            ops.add(ContentProviderOperation.newDelete(lookupUri).build())
         }
-        return deletedCount
+
+        return try {
+            val results = contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+            results.size
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // Fallback to individual deletion if batch fails
+            var deletedCount = 0
+            for (contact in contacts) {
+                if (deleteContact(contact)) {
+                    deletedCount++
+                }
+            }
+            deletedCount
+        }
     }
 }
