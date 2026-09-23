@@ -220,7 +220,11 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
             contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e(
+                "ContactsRepository",
+                "Update of contact $contactId failed: ${e.javaClass.simpleName}: ${e.message}",
+                e
+            )
             false
         }
     }
@@ -277,7 +281,11 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
             val results = contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
             results.isNotEmpty()
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e(
+                "ContactsRepository",
+                "Add contact \"$name\" failed: ${e.javaClass.simpleName}: ${e.message}",
+                e
+            )
             false
         }
     }
@@ -318,9 +326,16 @@ class ContactsRepository(private val contentResolver: ContentResolver) {
 
         return try {
             val results = contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
-            results.size
+            // Each ContentProviderResult corresponds 1:1 with an op, but a delete op
+            // that matched zero rows still produces a result — so results.size would
+            // overcount. Sum the actual affected-row counts instead.
+            results.sumOf { it.count ?: 0 }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e(
+                "ContactsRepository",
+                "Batch delete of ${contacts.size} contact(s) failed: ${e.javaClass.simpleName}: ${e.message}",
+                e
+            )
             // Fallback to individual deletion if batch fails
             var deletedCount = 0
             for (contact in contacts) {

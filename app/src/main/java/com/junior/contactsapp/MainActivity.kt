@@ -234,7 +234,10 @@ fun ContactsScreen(
                 },
                 actions = {
                     if (isSelectionMode) {
-                        if (selectedCount == viewModel.contacts.size) {
+                        val visibleContacts = viewModel.filteredContacts
+                        val allVisibleSelected = visibleContacts.isNotEmpty() &&
+                            visibleContacts.all { it.contactId in viewModel.selectedContactIds }
+                        if (allVisibleSelected) {
                             TextButton(onClick = { viewModel.clearSelection() }) {
                                 Text("Deselect All")
                             }

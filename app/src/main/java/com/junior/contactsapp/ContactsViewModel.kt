@@ -212,8 +212,13 @@ class ContactsViewModel(private val repository: ContactsRepository) : ViewModel(
         }
     }
 
+    /**
+     * Selects every contact currently visible (i.e. matching the active search
+     * filter, or all contacts if there's no filter) — never contacts that are
+     * hidden by a search query.
+     */
     fun selectAll() {
-        selectedContactIds = contacts.map { it.contactId }.toSet()
+        selectedContactIds = filteredContacts.map { it.contactId }.toSet()
     }
 
     fun clearSelection() {
